@@ -209,7 +209,7 @@ class SetupDirectory:
 
             for src, dst in zip(all_files, copy_paths):
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
-                shutil.copy(src, dst)
+                shutil.copyfile(src, dst)
 
             if copy_data is not None:
                 if isinstance(copy_data, str):
