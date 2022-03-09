@@ -79,6 +79,7 @@ def background_compose(x: tf.Tensor, y: tf.Tensor, mask: tf.Tensor) -> tf.Tensor
 @tf.function(experimental_relax_shapes=True)
 def white_background_compose(x: tf.Tensor, mask: tf.Tensor) -> tf.Tensor:
     return background_compose(x, tf.ones_like(x), mask)
+    # return background_compose(x, x, mask)
 
 
 def srgb_to_linear(x: tf.Tensor) -> tf.Tensor:

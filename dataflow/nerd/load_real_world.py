@@ -191,7 +191,7 @@ def handle_exif(basedir):
     files = [
         os.path.join(basedir, "images", f)
         for f in sorted(os.listdir(os.path.join(basedir, "images")))
-        if f.endswith("JPG") or f.endswith("jpg")
+        if f.endswith("JPG") or f.endswith("jpg") or f.endswith("png") or f.endswith("PNG")
     ]
 
     if len(files) == 0:
@@ -201,18 +201,18 @@ def handle_exif(basedir):
 
     ret = []
     for f in files:
-        try:
-            img = PIL.Image.open(f)
-            exif_data = ehelp.formatted_exif_data(img)
+        # try:
+        #     img = PIL.Image.open(f)
+        #     exif_data = ehelp.formatted_exif_data(img)
 
-            iso = int(exif_data["ISOSpeedRatings"])
-            aperture = float(exif_data["FNumber"])
+        #     iso = int(exif_data["ISOSpeedRatings"])
+        #     aperture = float(exif_data["FNumber"])
 
-            exposureTime = ehelp.getExposureTime(exif_data)
+        #     exposureTime = ehelp.getExposureTime(exif_data)
 
-            ev100 = calculate_ev100_from_metadata(aperture, exposureTime, iso)
-        except:
-            ev100 = 8
+        #     ev100 = calculate_ev100_from_metadata(aperture, exposureTime, iso)
+        # except:
+        ev100 = 8
 
         ret.append(ev100)
 
@@ -243,6 +243,7 @@ def ptstocam(pts, c2w):
 def poses_avg(poses):
 
     hwf = poses[0, :3, -1:]
+    #hwf = poses[:, :3, -1:].mean(0)
 
     center = poses[:, :3, 3].mean(0)
     vec2 = normalize(poses[:, :3, 2].sum(0))

@@ -50,6 +50,13 @@ def add_args(parser):
         help="exponential learning rate decay (in 1000s)",
     )
 
+    parser.add_argument(
+        "--envmap_path",
+        type=str,
+        default=None,
+        help="envmap path for relighting"
+    )
+
     parser.add_argument("--render_only", action="store_true")
 
     return parser
@@ -65,6 +72,18 @@ def parse_args():
     )
     return train_utils.parse_args_file_without_nones(parser)
 
+def get_envmap(path):
+    import cv2
+    img = cv2.cvtColor(
+        cv2.imread(path, cv2.IMREAD_UNCHANGED), cv2.COLOR_BGR2RGB
+    ).astype(np.float32)
+    img = cv2.resize(img, (256, 128), cv2.INTER_AREA)
+    cv2.imwrite('spotlight_gt.png', img.astype(np.uint8))
+
+    if img.min() < 0:
+        img = img + img.min()
+
+    return tf.convert_to_tensor(np.clip(np.nan_to_num(img, nan=0, posinf=np.max(img), neginf=0), 0, None))
 
 def eval_datasets(
     strategy,
@@ -77,6 +96,7 @@ def eval_datasets(
     steps: int,
     chunk_size: int,
     is_single_env: bool,
+    envmap_path=None,
 ):
     # Build lists to save all individual images
     gt_rgbs = []
@@ -93,6 +113,15 @@ def eval_datasets(
         ("normal", 3),
         ("depth", 1),
     ]
+
+    illumination_context_override = None
+    if envmap_path:
+        illumination_context_override = np.load(envmap_path)
+        print("new context = ", illumination_context_override)
+        print("new context = ", illumination_context_override.shape)
+        illumination_context_override = tf.convert_to_tensor(illumination_context_override)
+        # envmap = get_envmap(envmap_path)
+        # illumination_context_override = get_illum_override_context(envmap)
 
     H, W, _ = hwf
 
@@ -143,6 +172,7 @@ def eval_datasets(
                 img_idx,
                 ev100,
                 training=False,
+                illumination_context_override=illumination_context_override,
                 high_quality=True,
             )
 
@@ -162,7 +192,11 @@ def eval_datasets(
 
             # Also render the environment illumination
             img_idx = img_idx[:1]  # only first needed. Others are duplications
-            sgs = nerd.sgs_store(img_idx)
+            if illumination_context_override is None:
+                sgs = nerd.sgs_store(img_idx)
+            else:
+                sgs = illumination_context_override
+
             env_map = nerd.renderer.visualize_fit((64, 128), sgs)
 
             predictions["fine_env_map"] = predictions.get("fine_env_map", []) + [
@@ -300,7 +334,7 @@ def main(args):
         color_loss_lambda = tf.Variable(1.0, dtype=tf.float32)
         # Run the actual optimization for x epochs
 
-        for epoch in range(start_epoch + 1, args.epochs + 1):
+        for epoch in range(start_epoch + 1, args.epochs + (2 if args.render_only else 1)):
             pbar = tf.keras.utils.Progbar(len(train_df))
 
             # Iterate over the train dataset
@@ -443,6 +477,7 @@ def main(args):
                     100,
                     args.batch_size,
                     args.single_env,
+                    args.envmap_path,
                 )
 
                 if not args.single_env:
@@ -450,11 +485,24 @@ def main(args):
                         tf.summary.experimental.get_step() + 1
                     )  # Save the illumination optimization
 
-                testimgdir = os.path.join(
-                    args.basedir,
-                    args.expname,
-                    "test_imgs_{:06d}".format(tf.summary.experimental.get_step() - 1),
-                )
+                if args.envmap_path is None:
+                    testimgdir = os.path.join(
+                        args.basedir,
+                        args.expname,
+                        "test_imgs_{:06d}".format(tf.summary.experimental.get_step() - 1),
+                    )
+                else:
+                    testimgdir = os.path.join(
+                        args.basedir,
+                        args.expname,
+                        args.envmap_path.split('/')[-1].replace('.npy', '_') + "test_imgs_{:06d}".format(tf.summary.experimental.get_step() - 1),
+                    )
+
+                # testimgdir = os.path.join(
+                #     args.basedir,
+                #     args.expname,
+                #     "test_imgs_{:06d}".format(tf.summary.experimental.get_step() - 1),
+                # )
 
                 alpha = ret["fine_acc_alpha"]
                 print("Mean PSNR:", fine_psnr, "Mean SSIM:", fine_ssim)
@@ -537,6 +585,7 @@ def render_video(
     video_img_dir,
     video_dir,
 ):
+    return
     H, W, F = hwf
     fine_results = {}
 

@@ -2,7 +2,7 @@ import json
 import os
 
 import numpy as np
-import pyexr
+# import pyexr
 import tensorflow as tf
 
 import utils.exposure_helper as exphelp

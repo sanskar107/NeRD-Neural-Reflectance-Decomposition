@@ -583,6 +583,12 @@ class NerdFineModel(tf.keras.Model):
             # Which points from surface to camera
             view_direction = math_utils.normalize(-1 * ray_directions)
 
+            # Evaluate everything for the environment
+            # env = self._sg_evaluate(sg_illumination, view_dir)
+            # # And sum all contributions
+            # env = tf.reduce_sum(env, 1)
+            # tf.print(payload["acc_alpha"])
+
             rgb_render = self.renderer(
                 sg_illuminations=sgs_illumination,
                 basecolor=payload["basecolor"],

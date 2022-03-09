@@ -66,6 +66,7 @@ class NerdModel(tf.keras.Model):
         training=False,
         skip_rendering: bool = False,
         high_quality=False,
+        illumination_context_override=None,
     ) -> Tuple[Dict[str, tf.Tensor], Dict[str, tf.Tensor]]:
         """Evaluate the network for given ray origins and directions and camera pose
 
@@ -88,11 +89,21 @@ class NerdModel(tf.keras.Model):
         """
 
         # Get the current illumination
-        sg_illumination = self.sgs_store(
-            sg_illumination_idx, camera_pose[0] if self.rotating_object else None
-        )
+        if illumination_context_override is None:
+            sg_illumination = self.sgs_store(
+                sg_illumination_idx, camera_pose[0] if self.rotating_object else None
+            )
+        else:
+            sgs = illumination_context_override
+            ampl = sgs[..., :3] * 1000
+            sg_illumination = tf.concat([ampl, sgs[..., 3:]], -1)
 
-        sg_illumination = self.sgs_store.validate_sgs(sg_illumination)
+        # sg_illumination = self.sgs_store(
+        #     sg_illumination_idx, camera_pose[0] if self.rotating_object else None
+        # )
+
+        # Check relighting with and without this
+        # sg_illumination = self.sgs_store.validate_sgs(sg_illumination)
 
         # Coarse step
         (
@@ -144,7 +155,7 @@ class NerdModel(tf.keras.Model):
     ):
         if illumination_context_override is not None:
             sg_illumination_idx = tf.cast(
-                tf.ones_like(sg_illumination_idx) * illumination_context_override,
+                tf.ones_like(sg_illumination_idx, tf.float32) * illumination_context_override,
                 tf.int32,
             )
 
@@ -190,8 +201,9 @@ class NerdModel(tf.keras.Model):
                     sg_illumination_idx,
                     ev100,
                     training,
-                    illumination_context_override,
+                    False,
                     high_quality,
+                    illumination_context_override,
                 ),
             )
 

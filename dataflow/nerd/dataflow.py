@@ -164,6 +164,7 @@ def pick_correct_dataset(args):
         if args.rwholdout > 0:
             print("Auto Real World holdout,", args.rwholdout)
             i_test = np.arange(images.shape[0])[:: args.rwholdout]
+        print(f"\nHolding out data : {i_test}\n")
 
         i_val = i_test
         i_train = np.array(
