@@ -4,7 +4,9 @@ from typing import Callable, List, Dict
 import imageio
 import numpy as np
 import tensorflow as tf
+import cv2
 from tqdm import tqdm
+from scipy.spatial.transform import Rotation
 
 import dataflow.nerd as data
 import nn_utils.math_utils as math_utils
@@ -72,16 +74,19 @@ def parse_args():
     )
     return train_utils.parse_args_file_without_nones(parser)
 
-def get_envmap(path):
+def get_envmap(path, reshape=True):
     import cv2
     img = cv2.cvtColor(
         cv2.imread(path, cv2.IMREAD_UNCHANGED), cv2.COLOR_BGR2RGB
     ).astype(np.float32)
-    img = cv2.resize(img, (256, 128), cv2.INTER_AREA)
-    cv2.imwrite('spotlight_gt.png', img.astype(np.uint8))
+    if reshape:
+        img = cv2.resize(img, (256, 128), cv2.INTER_AREA)
+    # cv2.imwrite('spotlight_gt.png', img.astype(np.uint8))
 
     if img.min() < 0:
         img = img + img.min()
+    # img = norm_envmap(img) * 255
+    # img = img / 10
 
     return tf.convert_to_tensor(np.clip(np.nan_to_num(img, nan=0, posinf=np.max(img), neginf=0), 0, None))
 
@@ -97,10 +102,29 @@ def eval_datasets(
     chunk_size: int,
     is_single_env: bool,
     envmap_path=None,
+    render_poses=None,
+    expname=None,
+    pose_idx=None,
+    fix_pose_idx=None,
 ):
+    if not expname:
+        print("No expname provided")
+        exit(0)
+
     # Build lists to save all individual images
     gt_rgbs = []
     gt_masks = []
+
+    align_matrix = render_poses[-1][:3, :3]
+    render_poses = render_poses[:-1]
+
+    H, W, F = render_poses[0][:3, 4]
+    H, W = int(H), int(W)
+    H, W, F = H // 2, W // 2, F / 2.0
+    # H, W, F = H // 2, W // 2, F / 8.0
+    # H, W, F = H//4, W//4, F / 4.0
+    # H, W, F = int(H // 1.5), int(W // 1.5), F / 1.5
+
 
     predictions = {}
     to_extract_coarse = [("rgb", 3), ("acc_alpha", 1)]
@@ -114,16 +138,172 @@ def eval_datasets(
         ("depth", 1),
     ]
 
+    for d in df:  # Get the first illumination from test set
+        img_idx, _, _, _, _, ev100_video, _, _, _ = d
+        break
+
     illumination_context_override = None
     if envmap_path:
-        illumination_context_override = np.load(envmap_path)
+        illumination_context_override = np.load(envmap_path.replace('.hdr', '.npy'))
+        illumination_context_override = nerd.sgs_store.validate_sgs(illumination_context_override).numpy()
+
         print("new context = ", illumination_context_override)
         print("new context = ", illumination_context_override.shape)
         illumination_context_override = tf.convert_to_tensor(illumination_context_override)
-        # envmap = get_envmap(envmap_path)
-        # illumination_context_override = get_illum_override_context(envmap)
 
-    H, W, _ = hwf
+    pose_df = tf.data.Dataset.from_tensor_slices(render_poses[:, :3, :4])
+
+
+    if envmap_path is not None:
+        envmap_background = get_envmap(envmap_path, reshape=False).numpy()
+        envmap_background = cv2.resize(envmap_background , (1024, 512), cv2.INTER_AREA)
+        print("background = ", envmap_background.shape)
+    else:
+        envmap_background = None
+
+    def norm_envmap(data):
+        return np.clip(
+            np.power(data / (np.ones_like(data) + data), 1.0 / 2.2),
+            0,
+            1
+        )
+
+    def render_pose(pose, envmap_background, envmap_rotation):
+        # Always start and end with mean
+        rays_o, rays_d = get_full_image_eval_grid(H, W, F, tf.reshape(pose, (3, 4)))
+
+        _, fine_result = nerd.distributed_call(
+            strategy=strategy,
+            chunk_size=args.batch_size,
+            ray_origins=tf.reshape(rays_o, (-1, 3)),
+            ray_directions=tf.reshape(rays_d, (-1, 3)),
+            camera_pose=pose,
+            near_bound=0.95*near,
+            far_bound=1.05*far,
+            sg_illumination_idx=tf.convert_to_tensor([0]),
+            ev100=ev100_video,
+            training=False,
+            illumination_context_override=illumination_context_override,
+            high_quality=False,
+        )
+        # img = fine_result["rgb"].numpy()
+        # img = img.reshape(H, W, 3)
+        # print("raw = ", img, img.min(), img.max())
+        # img = (img / img.max()) * 255
+        # cv2.imwrite("temp3.png", img.astype(np.uint8))
+        # exit(0)
+
+        if envmap_background is not None:
+            view_direction = math_utils.normalize(tf.reshape(rays_d, (-1, 3)))
+            view_direction = tf.convert_to_tensor(view_direction.numpy() @ align_matrix @ envmap_rotation)
+
+            uv = math_utils.direction_to_uv(tf.reshape(view_direction, (-1, 3))).numpy()
+            u, v = uv[:, 0], uv[:, 1]
+            x = np.clip(u * envmap_background.shape[1] - 0.5, 0, envmap_background.shape[1]).astype(np.int32)
+            y = np.clip(v * envmap_background.shape[0] - 0.5, 0, envmap_background.shape[0]).astype(np.int32)
+            print(x.reshape(H, W),y.reshape(H, W))
+
+            out = np.empty((uv.shape[0], 3))
+            out = envmap_background[y,x]
+            out = out.reshape((H, W, 3))
+            out = norm_envmap(out)
+
+            cv2.imwrite('videos/envmap4.png', (out*255)[:, :, [2, 1, 0]].astype(np.uint8))
+
+            view_direction = math_utils.normalize(-1 * tf.reshape(view_direction, (-1, 3)))
+            fres = fine_result
+            sgs = illumination_context_override
+
+            hdr_rgb = nerd.renderer(
+                sg_illuminations=sgs,
+                basecolor=fres["basecolor"],
+                metallic=fres["metallic"],
+                roughness=fres["roughness"],
+                normal=fres["normal"],
+                alpha=fres["acc_alpha"],
+                view_dir=view_direction,
+            )
+
+            fine_result["hdr_rgb"] = hdr_rgb
+
+            return fine_result, out.reshape(-1, 3).astype(np.float32)
+        else:
+            return fine_result, None
+
+    fine_results = {}
+    hdr_name = 'estimated' if envmap_path is None else envmap_path.split('/')[-1].replace('.hdr', '')
+    if fix_pose_idx is not None:
+        hdr_name += '_fixed'
+    out_dir = os.path.join('videos', expname, hdr_name)
+    print("saving results in : ", out_dir)
+    os.makedirs(out_dir, exist_ok=True)
+    os.makedirs(os.path.join(out_dir, 'images'), exist_ok=True)
+    os.makedirs(os.path.join(out_dir, 'masks'), exist_ok=True)
+    os.makedirs(os.path.join(out_dir, 'envmaps'), exist_ok=True)
+
+    for iter, pose_dp in enumerate(tqdm(pose_df)):
+        cur_pose = pose_dp
+        print("cur pose : ", cur_pose)
+
+        if fix_pose_idx is not None:
+            envmap_rotation = np.linspace(0,360,num=720+1)[:-1][pose_idx + 360 * iter]
+            envmap_rotation = Rotation.from_rotvec([0,0,envmap_rotation], degrees=True).as_matrix().astype(np.float32)
+        else:
+            envmap_rotation = np.eye(3).astype(np.float32)
+
+        fine_result, background = render_pose(pose_dp, envmap_background, envmap_rotation)
+
+        if background is None:
+            # fine_result["rgb"] = math_utils.linear_to_srgb(math_utils.uncharted2_filmic(fine_result["hdr_rgb"]))
+            fine_result["rgb"] = math_utils.white_background_compose(
+                math_utils.linear_to_srgb(math_utils.saturate(fine_result["hdr_rgb"] * math_utils.ev100_to_exp(ev100_video))),
+                fine_result["acc_alpha"][..., None],
+            )
+
+        else:
+            fine_result["rgb"] = math_utils.env_background_compose(
+                math_utils.linear_to_srgb(
+                    math_utils.uncharted2_filmic(fine_result["hdr_rgb"])
+                ),
+                tf.convert_to_tensor(background),
+                fine_result["acc_alpha"][..., None]
+            )
+
+        rgb = (fine_result["rgb"].numpy() * 255).astype(np.uint8)
+        rgb = rgb.reshape((H, W, 3))
+
+        mask1 = fine_result["acc_alpha"][..., None]
+
+        mask = fine_result["acc_alpha"][..., None] * (
+                    tf.where(
+                        fine_result["depth"] < (far * 1.0),
+                        tf.ones_like(fine_result["depth"]),
+                        tf.zeros_like(fine_result["depth"]),
+                    )[..., None]
+                )
+
+        mask = mask.numpy().reshape((H, W)) * 255
+        mask = mask.astype(np.uint8)
+
+        mask1 = mask1.numpy().reshape((H, W)) * 255
+        mask1 = mask1.astype(np.uint8)
+
+        out_path = os.path.join(out_dir, 'images', 'rgb_' + str(pose_idx + iter*360) + '.png')
+        cv2.imwrite(out_path, rgb[:, :, [2, 1, 0]])
+
+        out_path = os.path.join(out_dir, 'masks', 'mask_' + str(pose_idx + iter*360) + '.png')
+        cv2.imwrite(out_path, mask)
+        cv2.imwrite(out_path.replace('mask_', 'mask_no_depth'), mask1)
+
+        if background is not None:
+            background = (background.reshape((H, W, 3)) * 255).astype(np.uint8)[:, :, [2, 1, 0]]
+            out_path = os.path.join(out_dir, 'envmaps', 'env_' + str(pose_idx + iter*360) + '.png')
+            cv2.imwrite(out_path, background)
+
+    exit(0)
+
+
+
 
     # Go over validation dataset
     with strategy.scope():
@@ -279,7 +459,7 @@ def main(args):
     # Setup directories, logging etc.
     with train_utils.SetupDirectory(
         args,
-        copy_files=not args.render_only,
+        copy_files=False,
         main_script=__file__,
         copy_data="data/nerd",
     ):
@@ -334,137 +514,11 @@ def main(args):
         color_loss_lambda = tf.Variable(1.0, dtype=tf.float32)
         # Run the actual optimization for x epochs
 
-        for epoch in range(start_epoch + 1, args.epochs + (2 if args.render_only else 1)):
+        for epoch in range(start_epoch + 1, start_epoch + 2):
             pbar = tf.keras.utils.Progbar(len(train_df))
 
-            # Iterate over the train dataset
-            if not args.render_only:
-                with strategy.scope():
-                    for dp in train_dist_df:
-                        (
-                            img_idx,
-                            rays_o,
-                            rays_d,
-                            pose,
-                            mask,
-                            ev100,
-                            wb,
-                            wb_ref_image,
-                            target,
-                        ) = dp
-
-                        advanced_loss_lambda.assign(
-                            1 * 0.9 ** (tf.summary.experimental.get_step() / 5000)
-                        )  # Starts with 1 goes to 0
-                        color_loss_lambda.assign(
-                            1 * 0.75 ** (tf.summary.experimental.get_step() / 1500)
-                        )  # Starts with 1 goes to 0
-
-                        # Execute train the train step
-                        (
-                            fine_payload,
-                            _,
-                            loss_per_replica,
-                            coarse_losses_per_replica,
-                            fine_losses_per_replica,
-                        ) = strategy.run(
-                            nerd.train_step,
-                            (
-                                rays_o,
-                                rays_d,
-                                pose,
-                                near,
-                                far,
-                                img_idx,
-                                ev100,
-                                wb_ref_image,
-                                wb,
-                                optimizer,
-                                target,
-                                mask,
-                                advanced_loss_lambda,
-                                color_loss_lambda,
-                                (tf.summary.experimental.get_step() < 1000),
-                            ),
-                        )
-
-                        loss = strategy.reduce(
-                            tf.distribute.ReduceOp.SUM, loss_per_replica, axis=None
-                        )
-                        coarse_losses = {}
-                        for k, v in coarse_losses_per_replica.items():
-                            coarse_losses[k] = strategy.reduce(
-                                tf.distribute.ReduceOp.SUM, v, axis=None
-                            )
-                        fine_losses = {}
-                        for k, v in fine_losses_per_replica.items():
-                            fine_losses[k] = strategy.reduce(
-                                tf.distribute.ReduceOp.SUM, v, axis=None
-                            )
-
-                        losses_for_pbar = [
-                            ("loss", loss.numpy()),
-                            ("coarse_loss", coarse_losses["loss"].numpy()),
-                            ("fine_loss", fine_losses["loss"].numpy()),
-                            ("fine_image_loss", fine_losses["image_loss"].numpy()),
-                        ]
-
-                        pbar.add(
-                            1,
-                            values=losses_for_pbar,
-                        )
-
-                        # Log to tensorboard
-                        with tf.summary.record_if(
-                            tf.summary.experimental.get_step() % args.log_step == 0
-                        ):
-                            tf.summary.scalar("loss", loss)
-                            for k, v in coarse_losses.items():
-                                tf.summary.scalar("coarse_%s" % k, v)
-                            for k, v in fine_losses.items():
-                                tf.summary.scalar("fine_%s" % k, v)
-                            tf.summary.scalar(
-                                "lambda_advanced_loss", advanced_loss_lambda
-                            )
-
-                            # tf.summary.histogram(
-                            #     "brdf_embedding", fine_payload["brdf_embedding"]
-                            # )
-
-                        tf.summary.experimental.set_step(
-                            tf.summary.experimental.get_step() + 1
-                        )
-
-                # Show last dp and render to tensorboard
-                if train_utils.get_num_gpus() > 1:
-                    dp = [d.values[0] for d in dp]
-
-                render_test_example(dp, hwf, nerd, near, far, strategy)
-
-            # Save when a weight epoch arrives
-            if epoch % args.weights_epoch == 0:
-                nerd.save(
-                    tf.summary.experimental.get_step()
-                )  # Step was already incremented
-
-            # Render validation if a validation epoch arrives
-            if epoch % args.validation_epoch == 0:
-                print("RENDERING VALIDATION...")
-                # Build lists to save all individual images
-                run_validation(
-                    strategy,
-                    val_df,
-                    nerd,
-                    hwf,
-                    near,
-                    far,
-                    sgs_optimizer,
-                    args.batch_size,
-                    args.single_env,
-                )
-
             # Render test set when a test epoch arrives
-            if epoch % args.testset_epoch == 0 or args.render_only:
+            if True:
                 print("RENDERING TESTSET...")
                 ret, fine_ssim, fine_psnr = eval_datasets(
                     strategy,
@@ -478,12 +532,11 @@ def main(args):
                     args.batch_size,
                     args.single_env,
                     args.envmap_path,
+                    render_poses,
+                    args.expname,
+                    args.pose_idx,
+                    args.fix_pose_idx,
                 )
-
-                if not args.single_env:
-                    nerd.save(
-                        tf.summary.experimental.get_step() + 1
-                    )  # Save the illumination optimization
 
                 if args.envmap_path is None:
                     testimgdir = os.path.join(
@@ -543,7 +596,7 @@ def main(args):
                             )
 
             # Render video when a video epoch arrives
-            if epoch % args.video_epoch == 0 or args.render_only:
+            if False:
                 print("RENDERING VIDEO...")
                 video_dir = os.path.join(
                     args.basedir,
@@ -585,7 +638,6 @@ def render_video(
     video_img_dir,
     video_dir,
 ):
-    return
     H, W, F = hwf
     fine_results = {}
 

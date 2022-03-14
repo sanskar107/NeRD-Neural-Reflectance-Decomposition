@@ -79,6 +79,10 @@ def background_compose(x: tf.Tensor, y: tf.Tensor, mask: tf.Tensor) -> tf.Tensor
 @tf.function(experimental_relax_shapes=True)
 def white_background_compose(x: tf.Tensor, mask: tf.Tensor) -> tf.Tensor:
     return background_compose(x, tf.ones_like(x), mask)
+
+@tf.function(experimental_relax_shapes=True)
+def env_background_compose(x: tf.Tensor, y:tf.Tensor, mask: tf.Tensor) -> tf.Tensor:
+    return background_compose(x, y, mask)
     # return background_compose(x, x, mask)
 
 

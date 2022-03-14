@@ -93,6 +93,10 @@ class NerdModel(tf.keras.Model):
             sg_illumination = self.sgs_store(
                 sg_illumination_idx, camera_pose[0] if self.rotating_object else None
             )
+            sg_illumination = self.sgs_store.validate_sgs(sg_illumination)
+            # sgs = sg_illumination
+            # ampl = sgs[..., :3] * 1000
+            # sg_illumination = tf.concat([ampl, sgs[..., 3:]], -1)
         else:
             sgs = illumination_context_override
             ampl = sgs[..., :3] * 1000

@@ -115,17 +115,17 @@ def fit_sgs(
     print("Fitting took", total_time)
 
     # write to disk
-    sgs_path = os.path.join(path, "{0:03d}_sg.npy".format(num_sgs))
-    env_path = os.path.join(path, "{0:03d}_sg_env.exr".format(num_sgs))
-    np.save(sgs_path, sgs_tf.numpy())
-    pyexr.write(env_path, sg_envmap.numpy())
+    # sgs_path = os.path.join(path, "{0:03d}_sg.npy".format(num_sgs))
+    # env_path = os.path.join(path, "{0:03d}_sg_env.exr".format(num_sgs))
+    np.save(path, sgs_tf.numpy())
+    # pyexr.write(env_path, sg_envmap.numpy())
 
 
 def main():
     args = parse_args()
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
 
-    os.makedirs(args.out_path, exist_ok=True)
+    # os.makedirs(args.out_path, exist_ok=True)
 
     if args.envmap[-3:] == "exr":
         env_map = pyexr.open(args.envmap).get()[..., :3]
