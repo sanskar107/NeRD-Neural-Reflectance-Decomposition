@@ -178,8 +178,8 @@ def eval_datasets(
             ray_origins=tf.reshape(rays_o, (-1, 3)),
             ray_directions=tf.reshape(rays_d, (-1, 3)),
             camera_pose=pose,
-            near_bound=0.95*near,
-            far_bound=1.05*far,
+            near_bound=0.8*near,
+            far_bound=1.2*far,
             sg_illumination_idx=tf.convert_to_tensor([0]),
             ev100=ev100_video,
             training=False,
@@ -234,7 +234,8 @@ def eval_datasets(
     hdr_name = 'estimated' if envmap_path is None else envmap_path.split('/')[-1].replace('.hdr', '')
     if fix_pose_idx is not None:
         hdr_name += '_fixed'
-    out_dir = os.path.join('videos', expname, hdr_name)
+    out_dir = os.path.join('/export/share/projects/svbrdf/data/out_videos/nerd/', expname, hdr_name)
+    # out_dir = os.path.join('videos', expname, hdr_name)
     print("saving results in : ", out_dir)
     os.makedirs(out_dir, exist_ok=True)
     os.makedirs(os.path.join(out_dir, 'images'), exist_ok=True)
@@ -248,6 +249,8 @@ def eval_datasets(
         if fix_pose_idx is not None:
             envmap_rotation = np.linspace(0,360,num=720+1)[:-1][pose_idx + 360 * iter]
             envmap_rotation = Rotation.from_rotvec([0,0,envmap_rotation], degrees=True).as_matrix().astype(np.float32)
+            rot4 = np.array([[0, -1, 0], [0, 0, 1], [-1, 0, 0]], dtype=np.float32).T
+            envmap_rotation = np.linalg.inv(rot4) @ envmap_rotation @ rot4
         else:
             envmap_rotation = np.eye(3).astype(np.float32)
 
@@ -276,7 +279,7 @@ def eval_datasets(
 
         mask = fine_result["acc_alpha"][..., None] * (
                     tf.where(
-                        fine_result["depth"] < (far * 1.0),
+                        fine_result["depth"] < (far * 1.2),
                         tf.ones_like(fine_result["depth"]),
                         tf.zeros_like(fine_result["depth"]),
                     )[..., None]
