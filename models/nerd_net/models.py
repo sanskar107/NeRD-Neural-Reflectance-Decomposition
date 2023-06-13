@@ -621,7 +621,7 @@ class NerdFineModel(tf.keras.Model):
             tf.Tensor: [description]
         """
         if ev100 is None:
-            exp_val = 1.0
+            assert False
         else:
             exp_val = tf.stop_gradient(math_utils.ev100_to_exp(ev100))
         ldr_rgb = math_utils.linear_to_srgb(math_utils.saturate(hdr_rgb * exp_val))

@@ -6,11 +6,14 @@ direct_rgb = True
 
 jitter_coords = True
 dataset_type = real_world
+single_env = True
+
+rwfactor = 2
 
 epochs = 300
 steps_per_epoch = 1000
 
-weights_epoch = 10
-validation_epoch = 5
+weights_epoch = 50
+validation_epoch = 300
 testset_epoch = 300
 video_epoch = 300

@@ -146,13 +146,15 @@ def pick_correct_dataset(args):
         near = args.near if args.near is not None else 2
         far = args.far if args.far is not None else 6
     elif args.dataset_type == "real_world":
-        (images, masks, ev100s, poses, bds, render_poses, i_test,) = load_llff_data(
+        print(f"Resize factor : {args.rwfactor}, spherify : {args.spherify}")
+        (images, masks, ev100s, poses, bds, render_poses, i_test, N_train, N_val) = load_llff_data(
             basedir=args.datadir, factor=args.rwfactor, spherify=args.spherify,
         )
 
-        hwf = poses[0, :3, -1]
+        hw = images.shape[1:3]
+        cxcyf = poses[0, :3, -1]
         poses = poses[:, :3, :4]
-        print("Loaded real world", images.shape, render_poses.shape, hwf, args.datadir)
+        print("Loaded real world", images.shape, render_poses.shape, hw, cxcyf, args.datadir)
         if not isinstance(i_test, list):
             i_test = [i_test]
 
@@ -160,20 +162,30 @@ def pick_correct_dataset(args):
             print("Auto Real World holdout,", args.rwholdout)
             i_test = np.arange(images.shape[0])[:: args.rwholdout]
 
-        i_val = i_test
-        i_train = np.array(
-            [
-                i
-                for i in np.arange(int(images.shape[0]))
-                if (i not in i_test and i not in i_val)
-            ]
-        )
+        i_train = np.arange(images.shape[0])[:N_train]
+        i_val = np.arange(images.shape[0])[N_train:N_train + 4]
+        i_test = np.arange(images.shape[0])[N_train:]
+        # i_test = i_val
+        print(f"total : {images.shape[0]}, train : {i_train}, val : {i_val}, test : {i_test}")
+
+        # i_val = i_test
+        # i_train = np.array(
+        #     [
+        #         i
+        #         for i in np.arange(int(images.shape[0]))
+        #         # if (i not in i_test and i not in i_val)
+        #     ]
+        # )
+        print(f"total : {images.shape[0]}, train : {i_train}, val : {i_val}, test : {i_test}")
 
         wb_ref_image = np.array([False for _ in range(images.shape[0])])
         # TODO make this configurable. Currently the reference image
         # is a completely random one
-        ref_idx = np.random.choice(i_train, 1)
-        wb_ref_image[ref_idx] = True
+        # ref_idx = np.random.choice(i_train, 1)
+        # print("ref_idx = ", ref_idx)
+        # wb_ref_image[ref_idx] = True
+        print(f"ref idx : 0")
+        wb_ref_image[0] = True
 
         near = args.near if args.near is not None else 0.9
         far = args.far if args.far is not None else 1.0
@@ -182,11 +194,12 @@ def pick_correct_dataset(args):
         far = tf.reduce_max(bds) * far
 
     # Cast intrinsics to right types
-    H, W, focal = hwf
+    H, W = hw
     H, W = int(H), int(W)
-    hwf = [H, W, focal]
+    cx, cy, focal = cxcyf
+    hwcxcyf = [H, W, cx, cy, focal]
 
-    mean_ev100 = np.mean(ev100s)
+    mean_ev100 = np.mean(ev100s[i_train])
 
     return (
         i_train,
@@ -200,7 +213,7 @@ def pick_correct_dataset(args):
         wbs,
         wb_ref_image,
         render_poses,
-        hwf,
+        hwcxcyf,
         near,
         far,
     )
@@ -208,7 +221,7 @@ def pick_correct_dataset(args):
 
 @tf.function
 def build_rays(
-    hwf,
+    hwcxcyf,
     image,
     mask,
     pose,
@@ -219,7 +232,7 @@ def build_rays(
     num_gpu,
     should_jitter_coords: bool,
 ):
-    H, W, focal = hwf
+    H, W, cx, cy, focal = hwcxcyf
     # Setup ray jittering
     jitter_coords = None
     if should_jitter_coords:
@@ -228,7 +241,7 @@ def build_rays(
     input_ev100 = tf.reshape(ev100, (1,))  # [1]
     pose = pose[:3, :4]
 
-    rays_o, rays_d = get_full_image_eval_grid(H, W, focal, pose, jitter=jitter_coords)
+    rays_o, rays_d = get_full_image_eval_grid(H, W, cx, cy, focal, pose, jitter=jitter_coords)
     if num_rand_per_gpu > 0:
         coordsFull = tf.stack(tf.meshgrid(tf.range(H), tf.range(W), indexing="ij"), -1)
         coords = tf.reshape(coordsFull, [-1, 2])
@@ -279,7 +292,7 @@ def build_rays(
 
 def dataflow(
     args,
-    hwf,
+    hwcxcyf,
     images,
     masks,
     poses,
@@ -322,7 +335,7 @@ def dataflow(
             lambda idx, dp: (
                 math_utils.repeat(idx[None,], num_gpus if is_train else 1, 0,),
                 *build_rays(
-                    hwf,
+                    hwcxcyf,
                     dp["image"],
                     dp["mask"],
                     dp["pose"],
@@ -359,7 +372,7 @@ def create_dataflow(args):
         wbs,
         wb_ref_image,
         render_poses,
-        hwf,
+        hwcxcyf,
         near,
         far,
     ) = pick_correct_dataset(args)
@@ -369,7 +382,7 @@ def create_dataflow(args):
         wbs = wbs.repeat(images.shape[0], 0)
 
     return (
-        hwf,
+        [hwcxcyf[0], hwcxcyf[1], hwcxcyf[4]],
         near,
         far,
         render_poses,
@@ -377,7 +390,7 @@ def create_dataflow(args):
         mean_ev100s,
         dataflow(
             args,
-            hwf,
+            hwcxcyf,
             images,
             masks,
             poses,
@@ -389,7 +402,7 @@ def create_dataflow(args):
         ),
         dataflow(
             args,
-            hwf,
+            hwcxcyf,
             images,
             masks,
             poses,
@@ -401,7 +414,7 @@ def create_dataflow(args):
         ),
         dataflow(
             args,
-            hwf,
+            hwcxcyf,
             images,
             masks,
             poses,

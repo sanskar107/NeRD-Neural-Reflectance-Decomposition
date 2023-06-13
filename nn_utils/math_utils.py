@@ -10,8 +10,11 @@ def softplus_1m(x):
 
 
 def ev100_to_exp(ev100):
-    maxL = 1.2 * tf.pow(2.0, ev100)
-    return tf.maximum(1.0 / tf.maximum(maxL, EPS), tf.ones_like(maxL) * EPS)
+    return tf.pow(2.0, -1.0 * ev100)
+
+# def ev100_to_exp(ev100):
+#     maxL = 1.2 * tf.pow(2.0, ev100)
+#     return tf.maximum(1.0 / tf.maximum(maxL, EPS), tf.ones_like(maxL) * EPS)
 
 
 def create_exp_decay(val, decay_rate, decay_steps):
@@ -39,7 +42,7 @@ def repeat(x: tf.Tensor, n: int, axis: int) -> tf.Tensor:
         return tf.tile(x, repeat)
 
 
-def saturate(x, low=0.0, high=1.0):
+def saturate(x, low=EPS, high=1.0):
     with tf.name_scope("saturate"):
         return tf.clip_by_value(x, low, high)
 
@@ -84,25 +87,27 @@ def white_background_compose(x: tf.Tensor, mask: tf.Tensor) -> tf.Tensor:
 def srgb_to_linear(x: tf.Tensor) -> tf.Tensor:
     with tf.name_scope("srgb_to_linear"):
         x = saturate(x)
+        return tf.pow(x, 2.2)
 
-        switch_val = 0.04045
-        return tf.where(
-            tf.math.greater_equal(x, switch_val),
-            tf.pow((tf.maximum(x, switch_val) + 0.055) / 1.055, 2.4),
-            x / 12.92,
-        )
+        # switch_val = 0.04045
+        # return tf.where(
+        #     tf.math.greater_equal(x, switch_val),
+        #     tf.pow((tf.maximum(x, switch_val) + 0.055) / 1.055, 2.4),
+        #     x / 12.92,
+        # )
 
 
 def linear_to_srgb(x: tf.Tensor) -> tf.Tensor:
     with tf.name_scope("linear_to_srgb"):
         x = saturate(x)
+        return tf.pow(x, 1.0 / 2.2)
 
-        switch_val = 0.0031308
-        return tf.where(
-            tf.math.greater_equal(x, switch_val),
-            1.055 * tf.pow(tf.maximum(x, switch_val), 1.0 / 2.4) - 0.055,
-            x * 12.92,
-        )
+        # switch_val = 0.0031308
+        # return tf.where(
+        #     tf.math.greater_equal(x, switch_val),
+        #     1.055 * tf.pow(tf.maximum(x, switch_val), 1.0 / 2.4) - 0.055,
+        #     x * 12.92,
+        # )
 
 
 def soft_hdr(x, up_threshold=0.9, low_threshold=0.1):
@@ -236,9 +241,9 @@ def spherical_to_cartesian(theta: tf.Tensor, phi: tf.Tensor, r=1) -> tf.Tensor:
     Returns:
         The cartesian vector (x,y,z)
     """
-    x = r * tf.sin(phi) * tf.sin(theta)
-    y = r * tf.cos(phi)
-    z = r * tf.sin(phi) * tf.cos(theta)
+    y = r * tf.sin(phi) * tf.sin(theta)
+    z = r * tf.cos(phi)
+    x = -r * tf.sin(phi) * tf.cos(theta)
 
     return tf.concat([x, y, z], -1)
 
@@ -256,7 +261,7 @@ def cartesian_to_spherical(vec: tf.Tensor) -> tf.Tensor:
     x, y, z = vec[..., 0:1], vec[..., 1:2], vec[..., 2:3]
 
     r = magnitude(vec)
-    theta = tf.math.atan2(x, z)
+    theta = tf.math.atan2(y, -x)
     # atan2 outputs value from -pi to pi.
     # We expect 0 to 2pi.
     # The negative values need to map to second quadrant
@@ -265,7 +270,7 @@ def cartesian_to_spherical(vec: tf.Tensor) -> tf.Tensor:
     theta = tf.math.floormod(theta, 2 * np.pi - EPS)
 
     # Phi is just acos and safety to avoid div by 0
-    phi = tf.math.acos(tf.clip_by_value(tf.math.divide_no_nan(y, r), -1, 1))
+    phi = tf.math.acos(tf.clip_by_value(tf.math.divide_no_nan(z, r), -1, 1))
 
     return theta, phi, r
 

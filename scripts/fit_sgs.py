@@ -1,3 +1,7 @@
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).absolute().parent.parent))
+
 import argparse
 import os
 import time
@@ -18,7 +22,7 @@ from skimage.transform import resize
 def parse_args():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("envmap", type=str, help="Path to environment map.")
+    parser.add_argument("envmap", type=str, help="Path to environment map numpy file.")
     parser.add_argument(
         "--num_sgs",
         type=int,
@@ -39,7 +43,7 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--out_path", type=str, required=True, help="Path where to store the results."
+        "--out_path", type=str, required=False, help="Path where to store the results.", default=None
     )
     parser.add_argument("--gpu", type=int, required=True, help="Which GPU to use.")
 
@@ -88,7 +92,6 @@ def fit_sgs(
     num_sgs: int,
     steps: int,
     sg_render: SgRenderer,
-    path: str,
 ) -> Tuple[List[np.ndarray]]:
     # env map to tensor
     env_map = tf.convert_to_tensor(env_map, dtype=tf.float32)
@@ -113,8 +116,10 @@ def fit_sgs(
     print("Fitting took", total_time)
 
     # write to disk
-    sgs_path = os.path.join(path, "{0:03d}_sg.npy".format(num_sgs))
-    env_path = os.path.join(path, "{0:03d}_sg_env.exr".format(num_sgs))
+    # sgs_path = os.path.join(path, "{0:03d}_sg.npy".format(num_sgs))
+    # env_path = os.path.join(path, "{0:03d}_sg_env.exr".format(num_sgs))
+    return sgs_tf.numpy()
+
     np.save(sgs_path, sgs_tf.numpy())
     pyexr.write(env_path, sg_envmap.numpy())
 
@@ -122,22 +127,31 @@ def fit_sgs(
 def main():
     args = parse_args()
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
+    if args.out_path is None:
+        args.out_path = args.envmap.split(".npy")[0] + "_sgs.npy"
+    print("Saving to", args.out_path)
 
-    os.makedirs(args.out_path, exist_ok=True)
+    env_map = np.load(args.envmap)
+    print("Loaded envmap with shape", env_map.shape)
 
-    if args.envmap[-3:] == "exr":
-        env_map = pyexr.open(args.envmap).get()[..., :3]
-    else:
-        env_map = imageio.imread(args.envmap)
-
-    env_map = resize(env_map, (args.env_height, args.env_height * 2))
+    # resize envmap
+    env_map_resized = np.stack([resize(em, (args.env_height, args.env_height * 2)) for em in env_map])
+    print("Resized envmap to", env_map_resized.shape)
+    env_map = env_map_resized
 
     directions = math_utils.uv_to_direction(
-        math_utils.shape_to_uv(env_map.shape[0], env_map.shape[1])
+        math_utils.shape_to_uv(env_map.shape[1], env_map.shape[2])
     )
-    sg_render = SgRenderer()
 
-    fit_sgs(env_map, directions, args.num_sgs, args.steps, sg_render, args.out_path)
+    sgs = []
+    for i in tqdm(range(env_map.shape[0])):
+        sg_render = SgRenderer()
+        sgs.append(fit_sgs(env_map[i], directions, args.num_sgs, args.steps, sg_render))
+
+    sgs = np.stack(sgs)
+    print("out shape", sgs.shape)
+    np.save(args.out_path, sgs)
+    print(f"Saved to {args.out_path}.")
 
 
 if __name__ == "__main__":

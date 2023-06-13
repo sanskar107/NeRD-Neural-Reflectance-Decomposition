@@ -490,7 +490,7 @@ def add_gaussian_noise(raw, noise_std, randomized):
 
 
 def get_full_image_eval_grid(
-    H: int, W: int, focal: float, c2w: tf.Tensor, jitter: Optional[tf.Tensor] = None,
+    H: int, W: int, cx: float, cy: float, focal: float, c2w: tf.Tensor, jitter: Optional[tf.Tensor] = None,
 ) -> Tuple[tf.Tensor, tf.Tensor]:
     """Get ray origins, directions from a pinhole camera.
 
@@ -516,14 +516,33 @@ def get_full_image_eval_grid(
         i = i + jitter[:, :, 1]
         j = j + jitter[:, :, 0]
 
+    # dirs = tf.stack(
+    #     [
+    #         (i - float(867.2516) * float(0.5)) / float(focal),
+    #         -(j - float(594.6834) * float(0.5)) / float(focal+0.636115),
+    #         -tf.ones_like(i),
+    #     ],
+    #     -1,
+    # )
+
+    # dirs = tf.stack(
+    #     [
+    #         (i - float(W) * float(0.5)) / float(focal),
+    #         -(j - float(H) * float(0.5)) / float(focal),
+    #         -tf.ones_like(i),
+    #     ],
+    #     -1,
+    # )
+
     dirs = tf.stack(
         [
-            (i - float(W) * float(0.5)) / float(focal),
-            -(j - float(H) * float(0.5)) / float(focal),
+            (i - cx) / float(focal),
+            -(j - cy) / float(focal),
             -tf.ones_like(i),
         ],
         -1,
     )
+
     rays_d = tf.reduce_sum(dirs[..., None, :] * c2w[:3, :3], -1)
     rays_o = tf.broadcast_to(c2w[:3, -1], tf.shape(rays_d))
     return rays_o, rays_d

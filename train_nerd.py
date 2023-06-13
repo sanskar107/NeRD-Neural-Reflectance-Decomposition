@@ -50,6 +50,13 @@ def add_args(parser):
         help="exponential learning rate decay (in 1000s)",
     )
 
+    parser.add_argument(
+        "--envmap_path",
+        type=str,
+        default=None,
+        help="envmap path for relighting"
+    )
+
     parser.add_argument("--render_only", action="store_true")
 
     return parser
@@ -77,6 +84,7 @@ def eval_datasets(
     steps: int,
     chunk_size: int,
     is_single_env: bool,
+    envmap_path=None,
 ):
     # Build lists to save all individual images
     gt_rgbs = []
@@ -86,6 +94,8 @@ def eval_datasets(
     to_extract_coarse = [("rgb", 3), ("acc_alpha", 1)]
     to_extract_fine = [
         ("rgb", 3),
+        ("direct_rgb", 3),
+        ("hdr_rgb", 3),
         ("acc_alpha", 1),
         ("basecolor", 3),
         ("metallic", 1),
@@ -94,12 +104,20 @@ def eval_datasets(
         ("depth", 1),
     ]
 
+    if envmap_path:
+        context_overrides = np.load(envmap_path)
+        # print("new context = ", context_overrides)
+        print("new context = ", context_overrides.shape)
+        context_overrides = tf.convert_to_tensor(context_overrides)
+        # envmap = get_envmap(envmap_path)
+        # illumination_context_override = get_illum_override_context(envmap)
+
     H, W, _ = hwf
 
     # Go over validation dataset
     with strategy.scope():
-        for dp in tqdm(df):
-            img_idx, rays_o, rays_d, pose, mask, _, _, _, target = dp
+        for idx, dp in tqdm(enumerate(df)):
+            img_idx, rays_o, rays_d, pose, mask, ev100, _, _, target = dp
 
             gt_rgbs.append(tf.reshape(target, (H, W, 3)))
             gt_masks.append(tf.reshape(mask, (H, W, 1)))
@@ -123,6 +141,12 @@ def eval_datasets(
                     "Illumination estimation done. Remaining error:", sgs_loss.numpy()
                 )
 
+            illumination_context_override = None
+            if envmap_path:
+                # if idx not in [0, 1, 2]:
+                illumination_context_override = context_overrides[idx]
+
+            print(f"idx : {idx}, exposure : {ev100}")
             # Render image.
             coarse_result, fine_result = nerd.distributed_call(
                 strategy,
@@ -133,8 +157,9 @@ def eval_datasets(
                 near,
                 far,
                 img_idx,
-                None,
+                ev100,
                 training=False,
+                illumination_context_override=illumination_context_override,
                 high_quality=True,
             )
 
@@ -154,7 +179,10 @@ def eval_datasets(
 
             # Also render the environment illumination
             img_idx = img_idx[:1]  # only first needed. Others are duplications
-            sgs = nerd.sgs_store(img_idx)
+            if illumination_context_override is None:
+                sgs = nerd.sgs_store(img_idx)
+            else:
+                sgs = illumination_context_override
             env_map = nerd.renderer.visualize_fit((64, 128), sgs)
 
             predictions["fine_env_map"] = predictions.get("fine_env_map", []) + [
@@ -292,7 +320,7 @@ def main(args):
         color_loss_lambda = tf.Variable(1.0, dtype=tf.float32)
         # Run the actual optimization for x epochs
 
-        for epoch in range(start_epoch + 1, args.epochs + 1):
+        for epoch in range(start_epoch + 1, args.epochs + 2 if args.render_only else args.epochs + 1):
             pbar = tf.keras.utils.Progbar(len(train_df))
 
             # Iterate over the train dataset
@@ -397,7 +425,7 @@ def main(args):
                 if train_utils.get_num_gpus() > 1:
                     dp = [d.values[0] for d in dp]
 
-                render_test_example(dp, hwf, nerd, near, far, strategy)
+                # render_test_example(dp, hwf, nerd, near, far, strategy)
 
             # Save when a weight epoch arrives
             if epoch % args.weights_epoch == 0:
@@ -435,6 +463,7 @@ def main(args):
                     100,
                     args.batch_size,
                     args.single_env,
+                    args.envmap_path,
                 )
 
                 if not args.single_env:
@@ -442,11 +471,19 @@ def main(args):
                         tf.summary.experimental.get_step() + 1
                     )  # Save the illumination optimization
 
-                testimgdir = os.path.join(
-                    args.basedir,
-                    args.expname,
-                    "test_imgs_{:06d}".format(tf.summary.experimental.get_step() - 1),
-                )
+                if args.envmap_path is None:
+                    testimgdir = os.path.join(
+                        args.basedir,
+                        args.expname,
+                        "nvs_{:06d}".format(tf.summary.experimental.get_step() - 1),
+                    )
+                else:
+                    testimgdir = os.path.join(
+                        args.basedir,
+                        args.expname,
+                        "relight_test_imgs_{:06d}".format(tf.summary.experimental.get_step() - 1),
+                        # args.envmap_path.split('/')[-1].replace('.npy', '_') + "test_imgs_{:06d}".format(tf.summary.experimental.get_step() - 1),
+                    )
 
                 alpha = ret["fine_acc_alpha"]
                 print("Mean PSNR:", fine_psnr, "Mean SSIM:", fine_ssim)
@@ -457,6 +494,11 @@ def main(args):
                         if "normal" in n:
                             to_save = (t[b] * 0.5 + 0.5) * alpha[b] + (1 - alpha[b])
 
+                        if "hdr_rgb" in n:
+                            np.save(
+                                os.path.join(testimgdir, "{:d}_{}.npy".format(b, n)),
+                                to_save.numpy()
+                            )
                         if "env_map" in n:
                             imageio.imwrite(
                                 os.path.join(testimgdir, "{:d}_{}.png".format(b, n)),
@@ -487,7 +529,9 @@ def main(args):
                             )
 
             # Render video when a video epoch arrives
-            if epoch % args.video_epoch == 0 or args.render_only:
+            # if epoch % args.video_epoch == 0 or args.render_only:
+            print("\n**** Not rendering video ****\n")
+            if False:
                 print("RENDERING VIDEO...")
                 video_dir = os.path.join(
                     args.basedir,

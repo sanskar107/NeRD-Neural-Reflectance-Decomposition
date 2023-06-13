@@ -104,6 +104,11 @@ def ensureNoChannel(x: np.ndarray) -> np.ndarray:
 
 def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
     poses_arr = np.load(os.path.join(basedir, "poses_bounds.npy"))
+    val_poses_arr = np.load(os.path.join(basedir, "val_poses_bounds.npy"))
+    N_train = poses_arr.shape[0]
+    N_val = val_poses_arr.shape[0]
+    exposure_arr = np.load(os.path.join(basedir, "exposure.npy"))
+    poses_arr = np.concatenate([poses_arr, val_poses_arr], axis=0)
     poses = poses_arr[:, :-2].reshape([-1, 3, 5]).transpose([1, 2, 0])
     bds = poses_arr[:, -2:].transpose([1, 0])
 
@@ -114,7 +119,8 @@ def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
     ][0]
     sh = imageio.imread(img0).shape
 
-    ev100s = handle_exif(basedir)
+    # ev100s = handle_exif(basedir)
+    ev100s = exposure_arr.astype(np.float32) * -1.0
 
     sfx = ""
 
@@ -165,8 +171,8 @@ def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
         return
 
     sh = imageio.imread(imgfiles[0]).shape
-    poses[:2, 4, :] = np.array(sh[:2]).reshape([2, 1])
-    poses[2, 4, :] = poses[2, 4, :] * 1.0 / factor
+    # poses[:2, 4, :] = np.array(sh[:2]).reshape([2, 1])
+    poses[:3, 4, :] = poses[:3, 4, :] * 1.0 / factor  # scale cx, cy, f
 
     if not load_imgs:
         return poses, bds
@@ -184,14 +190,14 @@ def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
     masks = np.stack(masks, -1)
 
     print("Loaded image data", imgs.shape, masks.shape, poses[:, -1, 0])
-    return poses, bds, imgs, masks, ev100s
+    return poses, bds, imgs, masks, ev100s, N_train, N_val
 
 
 def handle_exif(basedir):
     files = [
         os.path.join(basedir, "images", f)
         for f in sorted(os.listdir(os.path.join(basedir, "images")))
-        if f.endswith("JPG") or f.endswith("jpg")
+        if f.endswith("JPG") or f.endswith("jpg") or f.endswith("png") or f.endswith("PNG")
     ]
 
     if len(files) == 0:
@@ -201,18 +207,18 @@ def handle_exif(basedir):
 
     ret = []
     for f in files:
-        try:
-            img = PIL.Image.open(f)
-            exif_data = ehelp.formatted_exif_data(img)
+        # try:
+        #     img = PIL.Image.open(f)
+        #     exif_data = ehelp.formatted_exif_data(img)
 
-            iso = int(exif_data["ISOSpeedRatings"])
-            aperture = float(exif_data["FNumber"])
+        #     iso = int(exif_data["ISOSpeedRatings"])
+        #     aperture = float(exif_data["FNumber"])
 
-            exposureTime = ehelp.getExposureTime(exif_data)
+        #     exposureTime = ehelp.getExposureTime(exif_data)
 
-            ev100 = calculate_ev100_from_metadata(aperture, exposureTime, iso)
-        except:
-            ev100 = 8
+        #     ev100 = calculate_ev100_from_metadata(aperture, exposureTime, iso)
+        # except:
+        ev100 = 6.0
 
         ret.append(ev100)
 
@@ -360,10 +366,11 @@ def spherify_poses(poses, bds):
 def load_llff_data(
     basedir, factor=8, recenter=True, bd_factor=0.75, spherify=False, path_zflat=False,
 ):
-    poses, bds, imgs, msks, ev100s = _load_data(
+    poses, bds, imgs, msks, ev100s, N_train, N_val = _load_data(
         basedir, factor=factor,
     )  # factor=8 downsamples original imgs by 8x
     print("Loaded", basedir, bds.min(), bds.max())
+    print(f"recenter {recenter}, bd_factor {bd_factor}, spherify {spherify}")
 
     # Correct rotation matrix ordering and move variable dim to axis 0
     poses = np.concatenate([poses[:, 1:2, :], -poses[:, 0:1, :], poses[:, 2:, :]], 1)
@@ -376,6 +383,7 @@ def load_llff_data(
 
     # Rescale if bd_factor is provided
     sc = 1.0 if bd_factor is None else 1.0 / (bds.min() * bd_factor)
+    print(f"Scaling by {sc}")
     poses[:, :3, 3] *= sc
     bds *= sc
 
@@ -435,4 +443,4 @@ def load_llff_data(
     masks = masks.astype(np.float32)
     poses = poses.astype(np.float32)
 
-    return images, masks, ev100s, poses, bds, render_poses, i_test
+    return images, masks, ev100s, poses, bds, render_poses, i_test, N_train, N_val
