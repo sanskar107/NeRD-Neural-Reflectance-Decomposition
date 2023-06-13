@@ -1,6 +1,6 @@
 # NeRD Experiments for "ERROR: Evaluation of Reconstruction and Rendering for Object Relighting"
 
-Please, find the modified code base at: https://anonymous.4open.science/r/tensoir-3D3C/README.md
+Please, find the modified code base at: https://anonymous.4open.science/r/NeRD-7D70/README.md
 
 ## Dataset
 
@@ -91,26 +91,3 @@ python train_nerd.py --datadir "$datadir" --basedir "out" --expname "$expname" -
 python train_nerd.py --datadir "$datadir" --basedir "out" --expname "$expname" --config configs/nerd/real_world.txt --rwfactor "$rwfactor" --single_env --render_only
 ```
 
-
-## Evaluation
-
-We provide lists of files for preparing evaluation.
-
-```bash                  
-eval
-├── bmvs_nvs.json              # List of files for NVS on BMVS
-├── dtu_nvs.json               # List of files for NVS on DTU
-├── ord_nvs.json               # List of files for NVS on object-relighting-dataset
-├── ord_relight.json           # List of files for relighting on object-relighting-dataset
-├── prepare_eval.py            # Copy the files to the evaluation folder
-├── synth4relight_nvs.json     # List of files for NVS on synth4relight
-└── synth4relight_relight.json # List of files for relighting on synth4relight
-``` 
-
-In the file list json files:
-
-- `gt_path`: Path to the ground-truth file
-- `pd_dst_path`: Path to the location where the prediction file will be copied
-- `pd_src_path`: Path to the prediction file
-
-Run `prepare_eval.py` to copy all `pd_src_path` to `pd_dst_path`.
